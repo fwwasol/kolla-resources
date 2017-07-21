@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-MGMT_IP=10.101.0.249
-MGMT_NETMASK=255.255.0.0
-MGMT_GATEWAY=10.101.101.1
+MGMT_IP=10.14.1.216
+MGMT_NETMASK=255.255.240.0
+MGMT_GATEWAY=10.14.0.1
 MGMT_DNS="8.8.8.8 8.8.4.4"
 
-FIP_START=10.101.64.2
-FIP_END=10.101.64.200
-FIP_GATEWAY=10.101.4.1
-FIP_CIDR=10.101.0.0/16
+FIP_START=192.168.2.35
+FIP_END=192.168.2.59
+FIP_GATEWAY=192.168.2.1
+FIP_CIDR=192.168.2.0/24
 TENANT_NET_DNS="8.8.8.8 8.8.4.4"
 
-KOLLA_INTERNAL_VIP_ADDRESS=10.101.231.254
+KOLLA_INTERNAL_VIP_ADDRESS=10.14.1.254
 
 KOLLA_BRANCH=stable/newton
 KOLLA_OPENSTACK_VERSION=3.0.2
@@ -136,14 +136,14 @@ sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl set interface int-b
 
 
 # Remove unneeded Nova containers
-for name in nova_compute nova_ssh nova_libvirt
-do
-    for id in $(sudo docker ps -q -a -f name=$name)
-    do
-        sudo docker stop $id
-        sudo docker rm $id
-    done
-done
+#for name in nova_compute nova_ssh nova_libvirt
+#do
+#    for id in $(sudo docker ps -q -a -f name=$name)
+#    do
+#        sudo docker stop $id
+#        sudo docker rm $id
+#    done
+#done
 
 
 #sudo add-apt-repository cloud-archive:newton -y && apt-get update
