@@ -14,10 +14,10 @@ TENANT_NET_DNS="8.8.8.8 8.8.4.4"
 
 KOLLA_INTERNAL_VIP_ADDRESS=10.14.1.254
 
-KOLLA_BRANCH=stable/newton
-KOLLA_OPENSTACK_VERSION=3.0.2
+KOLLA_BRANCH=stable/ocata
+KOLLA_OPENSTACK_VERSION=4.0.0
 
-DOCKER_NAMESPACE=cloudbaseit
+DOCKER_NAMESPACE=kolla
 
 sudo tee /etc/network/interfaces <<EOF
 # The loopback network interface
@@ -86,33 +86,9 @@ sudo sed -i '/#docker_namespace/i docker_namespace: "'$DOCKER_NAMESPACE'"' /etc/
 sudo sed -i '/#openstack_release/i openstack_release: "'$KOLLA_OPENSTACK_VERSION'"' /etc/kolla/globals.yml
 sudo kolla-ansible pull
 
-
 sudo sed -i 's/^kolla_internal_vip_address:\s.*$/kolla_internal_vip_address: "'$KOLLA_INTERNAL_VIP_ADDRESS'"/g' /etc/kolla/globals.yml
 sudo sed -i '/#network_interface/i network_interface: "eth0"' /etc/kolla/globals.yml
 sudo sed -i '/#neutron_external_interface/i neutron_external_interface: "eth1"' /etc/kolla/globals.yml
-
-sudo mkdir -p /etc/kolla/config/neutron
-
-# remove vxlan stuff
-sed -i '/ml2_type_vxlan/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/vni_ranges/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/vxlan_group/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/tunnel_types/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/l2_population/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/arp_responder/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-sed -i '/\[agent\]/d' /usr/local/share/kolla/ansible/roles/neutron/templates/ml2_conf.ini.j2
-
-sudo tee /etc/kolla/config/neutron/ml2_conf.ini <<-'EOF'
-[ml2]
-type_drivers = flat,vlan
-tenant_network_types = flat,vlan
-mechanism_drivers = openvswitch,hyperv
-extension_drivers = port_security
-[ml2_type_vlan]
-network_vlan_ranges = physnet2:500:2000
-[ovs]
-bridge_mappings = physnet1:br-ex,physnet2:br-data
-EOF
 
 # kolla-ansible prechecks fails if the hostname in the hosts file is set to 127.0.1.1
 MGMT_IP=$(sudo ip addr show eth0 | sed -n 's/^\s*inet \([0-9.]*\).*$/\1/p')
@@ -125,26 +101,15 @@ sudo kolla-ansible prechecks -i kolla/ansible/inventory/all-in-one
 sudo kolla-ansible deploy -i kolla/ansible/inventory/all-in-one
 sudo kolla-ansible post-deploy -i kolla/ansible/inventory/all-in-one
 
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl add-br br-data
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl add-port br-data eth2
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl add-port br-data phy-br-data || true
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl set interface phy-br-data type=patch
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl add-port br-int int-br-data || true
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl set interface int-br-data type=patch
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl set interface phy-br-data options:peer=int-br-data
-sudo docker exec --privileged openvswitch_vswitchd ovs-vsctl set interface int-br-data options:peer=phy-br-data
-
-
 # Remove unneeded Nova containers
-#for name in nova_compute nova_ssh nova_libvirt
-#do
-#    for id in $(sudo docker ps -q -a -f name=$name)
-#    do
-#        sudo docker stop $id
-#        sudo docker rm $id
-#    done
-#done
-
+for name in nova_compute nova_ssh nova_libvirt
+do
+    for id in $(sudo docker ps -q -a -f name=$name)
+    do
+        sudo docker stop $id
+        sudo docker rm $id
+    done
+done
 
 #sudo add-apt-repository cloud-archive:newton -y && apt-get update
 sudo apt-get install -y python-openstackclient
@@ -157,12 +122,20 @@ openstack image create --public --property hypervisor_type=hyperv --disk-format 
 rm cirros-0.3.4-x86_64.vhdx
 
 # Create the private network
-neutron net-create private-net --provider:physical_network physnet2 --provider:network_type vlan
+neutron net-create private-net --provider:network_type vxlan
 neutron subnet-create private-net 10.10.10.0/24 --name private-subnet --allocation-pool start=10.10.10.50,end=10.10.10.200 --dns-nameservers list=true $TENANT_NET_DNS --gateway 10.10.10.1
 
 # Create the public network
-neutron net-create public-net --shared --router:external --provider:physical_network physnet1 --provider:network_type flat
+neutron net-create public-net --router:external --provider:physical_network physnet1 --provider:network_type flat
 neutron subnet-create public-net --name public-subnet --allocation-pool start=$FIP_START,end=$FIP_END --disable-dhcp --gateway $FIP_GATEWAY $FIP_CIDR
+
+# Sec Group Config
+neutron security-group-rule-create default --direction ingress --ethertype IPv4 --protocol icmp --remote-ip-prefix 0.0.0.0/0
+neutron security-group-rule-create default --direction ingress --ethertype IPv4 --protocol tcp --port-range-min 22 --port-range-max 22 --remote-ip-prefix 0.0.0.0/0
+# Open heat-cfn so it can run on a different host
+neutron security-group-rule-create default --direction ingress --ethertype IPv4 --protocol tcp --port-range-min 8000 --port-range-max 8000 --remote-ip-prefix 0.0.0.0/0
+neutron security-group-rule-create default --direction ingress --ethertype IPv4 --protocol tcp --port-range-min 8080 --port-range-max 8080 --remote-ip-prefix 0.0.0.0/0
+
 
 # create a router and hook it the the networks
 neutron router-create router1
